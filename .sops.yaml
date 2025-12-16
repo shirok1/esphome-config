@@ -1,5 +1,5 @@
 creation_rules:
-  - path_regex: secrets\.yaml
-    age:
+  - age:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA156kuescaF7nCQo/2uPK270NlcycypQeSHKbABVuSH mbp
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID36DGwqiYct5AlWNVwB8R5TZWPmsVJm24MTYJ4HozwZ mbp-tuan
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGYSnku4FqRjxZ0zvKQYAr1kq6/6w9cOJs585HradOT4 zeph
