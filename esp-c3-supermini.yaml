@@ -1,0 +1,148 @@
+esphome:
+  name: esp-c3-supermini
+  friendly_name: esp-c3-supermini
+  includes:
+    - <esp_mac.h>
+  on_boot:
+    # 开机尽早设置 base MAC，确保后续 WiFi/BLE 都用这个 MAC
+    priority: -1000
+    then:
+      - lambda: |-
+          uint8_t mac[6] = {0x78, 0x81, 0x8c, 0x06, 0x9a, 0xc2};  // 原来 newMAC[5]-2 的结果
+          esp_err_t err = esp_base_mac_addr_set(mac);
+          if (err != ESP_OK) {
+            ESP_LOGE("ble_raw", "esp_base_mac_addr_set failed: %s", esp_err_to_name(err));
+          } else {
+            ESP_LOGI("ble_raw", "Base MAC set to %02X:%02X:%02X:%02X:%02X:%02X",
+                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+          }
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret esp_c3_supermini_api_key
+
+ota:
+  - platform: esphome
+    password: !secret esp_c3_supermini_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "ESP-C3-SuperMini"
+    password: !secret esp_c3_supermini_fallback_password
+
+captive_portal:
+
+# bluetooth_proxy:
+# Active connections are now enabled by default
+# To disable active connections (previous default behavior), use:
+# active: false
+# ========== 原生 BLE 组件 ==========
+esp32_ble:
+  id: ble
+  enable_on_boot: true
+  io_capability: "none"
+  advertising: true
+
+button:
+  - platform: template
+    name: "Send Wake BLE Adv"
+    id: send_wake_ble_adv
+    on_press:
+      - lambda: |-
+          ESP_LOGI("ble_raw", "Preparing raw BLE advertisement...");
+
+          // 跟你原始 wake_adv_data 完全一致
+          static uint8_t wake_adv_data[] = {
+              0x02, 0x01, 0x06,
+              0x1B, 0xFF,
+              0x53, 0x05, 0x01, 0x00, 0x03, 0x7e, 0x05, 0x66, 0x20, 0x00, 0x01, 0x81,
+              0x6D, 0x60, 0x16, 0x8C, 0x81, 0x78,
+              0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+          };
+
+          // 广播参数：跟原代码一样，NONCONN_IND + 0x20~0x40
+          esp_ble_adv_params_t adv_params = {};
+          adv_params.adv_int_min       = 0x20;
+          adv_params.adv_int_max       = 0x40;
+          adv_params.adv_type          = ADV_TYPE_NONCONN_IND;
+          adv_params.own_addr_type     = BLE_ADDR_TYPE_PUBLIC;  // ⭐ 用 public addr，基于上面 base MAC
+          adv_params.channel_map       = ADV_CHNL_ALL;
+          adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
+
+          esp_err_t err = esp_ble_gap_config_adv_data_raw(wake_adv_data, sizeof(wake_adv_data));
+          if (err != ESP_OK) {
+            ESP_LOGE("ble_raw", "esp_ble_gap_config_adv_data_raw failed: %s", esp_err_to_name(err));
+            return;
+          }
+
+          err = esp_ble_gap_start_advertising(&adv_params);
+          if (err != ESP_OK) {
+            ESP_LOGE("ble_raw", "esp_ble_gap_start_advertising failed: %s", esp_err_to_name(err));
+            return;
+          }
+
+          ESP_LOGI("ble_raw", "Raw BLE advertising started for 1s (public MAC set via base MAC)");
+
+      - delay: 1s
+
+      - lambda: |-
+          esp_err_t err = esp_ble_gap_stop_advertising();
+          if (err != ESP_OK) {
+            ESP_LOGE("ble_raw", "esp_ble_gap_stop_advertising failed: %s", esp_err_to_name(err));
+          } else {
+            ESP_LOGI("ble_raw", "Raw BLE advertising stopped");
+          }
+
+# # ========== 按钮：按一下发一次 BLE 广播（1 秒） ==========
+# button:
+#   - platform: template
+#     name: "Send BLE Beacon (esp32_ble)"
+#     id: ble_beacon_button
+#     icon: "mdi:bluetooth"
+#     on_press:
+#       - lambda: |-
+#           auto &b = id(ble);
+#           if (!b->is_active()) {
+#             // 如果 BLE 还没启用，先触发 state 机，loop 里会走 ble_setup_()
+#             b->enable();
+#           }
+
+#           // 你的 wake_adv_data[] 是：
+#           // 02 01 06
+#           // 1B FF
+#           // 53 05 01 00 03 7E 05 66 20 00 01 81
+#           // 6D 60 16 8C 81 78
+#           // 0F 00 00 00 00 00 00 00
+#           //
+#           // 其中 02 01 06 和 1B FF（len + type）由 BLEAdvertising 自己拼，
+#           // 这里只需要给“后面 26 字节 payload”：
+#           std::vector<uint8_t> mfg = {
+#             0x53, 0x05, 0x01, 0x00, 0x03, 0x7e, 0x05, 0x66,
+#             0x20, 0x00, 0x01, 0x81,
+#             0x6D, 0x60, 0x16, 0x8C, 0x81, 0x78,
+#             0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+#           };
+
+#           ESP_LOGI("ble", "Start advertising with manufacturer data (esp32_ble)");
+#           b->advertising_set_manufacturer_data(mfg);
+#           b->advertising_start();
+
+#       - delay: 1s
+
+#       - lambda: |-
+#           ESP_LOGI("ble", "Stopping advertising via ESP32BLE::advertising_stop()");
+#           // id(ble).advertising_stop();
+#           esp_ble_gap_stop_advertising();
